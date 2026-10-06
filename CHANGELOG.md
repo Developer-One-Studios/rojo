@@ -31,6 +31,20 @@ Making a new release? Simply add the new header with the version and date undern
 
 ## Unreleased
 
+## [7.7.1-tc.1] (Developer One Studios fork)
+
+* Several people can now sync into the same Team Create place at once. See [TEAM_CREATE.md](TEAM_CREATE.md) for how it works.
+* Connecting with files that are behind the place no longer reverts teammates' newer changes or deletes instances they added. Those changes are listed in the connect dialog and kept unless you choose to overwrite them.
+* While connected, saving a file a teammate changed more recently holds the change back and asks whether to overwrite their version.
+* Instances a teammate already created are taken over instead of duplicated, including when two people add the same file at the same moment.
+* Changes to instances a teammate removed bring them back, after asking.
+* The plugin shows who else is syncing to the place. While anyone syncs with this fork, one of them holds upstream Rojo's sync lock, which keeps unmodified plugins out.
+* Added the `/api/fingerprints` endpoint. It returns content fingerprints that match across every teammate's server, ignoring line endings.
+* Added the `Team Create Mode` and `Teammate Conflicts` plugin settings.
+* The plugin checks this fork's releases for updates instead of upstream Rojo's.
+
+[7.7.1-tc.1]: https://github.com/Developer-One-Studios/rojo
+
 ## [7.7.1] (October 1st, 2026)
 
 * Fixed `$path` values that point outside the project folder failing to match `syncRule`s on Windows, which broke `rojo sourcemap` with a "could not be turned into a Roblox Instance" error. ([#1290])
