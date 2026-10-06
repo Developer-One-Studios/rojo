@@ -204,11 +204,23 @@ function ChangesViewer:render()
 	end)
 end
 
+local function describeTeammates(teammates): string
+	local names = {}
+	for _, teammate in teammates do
+		table.insert(names, if teammate.legacy then teammate.userName .. " (old plugin)" else teammate.userName)
+	end
+
+	return "Also syncing: " .. table.concat(names, ", ")
+end
+
 local function ConnectionDetails(props)
+	local teammates = props.teammates or {}
+	local hasTeammates = #teammates > 0
+
 	return Theme.with(function(theme)
 		return e(BorderedContainer, {
 			transparency = props.transparency,
-			size = UDim2.new(1, 0, 0, 70),
+			size = UDim2.new(1, 0, 0, if hasTeammates then 70 + theme.TextSize.Body + 6 else 70),
 			layoutOrder = props.layoutOrder,
 		}, {
 			TextContainer = e("Frame", {
@@ -242,6 +254,27 @@ local function ConnectionDetails(props)
 					LayoutOrder = 2,
 					BackgroundTransparency = 1,
 				}),
+
+				Teammates = if hasTeammates
+					then e("TextLabel", {
+						Text = describeTeammates(teammates),
+						FontFace = theme.Font.Thin,
+						TextSize = theme.TextSize.Body,
+						TextColor3 = theme.ConnectionDetails.AddressColor,
+						TextTransparency = props.transparency,
+						TextXAlignment = Enum.TextXAlignment.Left,
+						TextTruncate = Enum.TextTruncate.AtEnd,
+
+						Size = UDim2.new(1, 0, 0, theme.TextSize.Body),
+
+						LayoutOrder = 3,
+						BackgroundTransparency = 1,
+					}, {
+						Tip = e(Tooltip.Trigger, {
+							text = "Other people syncing to this Team Create place with Rojo",
+						}),
+					})
+					else nil,
 
 				Layout = e("UIListLayout", {
 					VerticalAlignment = Enum.VerticalAlignment.Center,
@@ -436,6 +469,7 @@ function ConnectedPage:render()
 			ConnectionDetails = e(ConnectionDetails, {
 				projectName = self.state.projectName,
 				address = self.state.address,
+				teammates = self.props.teammates,
 				transparency = self.props.transparency,
 				layoutOrder = 2,
 

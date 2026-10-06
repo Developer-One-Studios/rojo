@@ -28,6 +28,8 @@ end
 
 local invertedLevels = invertTbl(Log.Level)
 local confirmationBehaviors = { "Initial", "Always", "Large Changes", "Unlisted PlaceId", "Never" }
+local teamCreateModes = { "Auto", "Always", "Never" }
+local teamCreateConflictBehaviors = { "Ask", "Skip", "Overwrite" }
 local syncReminderModes = { "None", "Notify", "Fullscreen" }
 
 local function Navbar(props)
@@ -172,6 +174,31 @@ function SettingsPage:render()
 						end
 					end,
 				}),
+			}),
+
+			TeamCreateMode = e(Setting, {
+				id = "teamCreateMode",
+				name = "Team Create Mode",
+				description = "Let several people sync into one Team Create place without overwriting each other. Auto turns this on whenever the place is open in Team Create",
+				locked = self.props.syncActive,
+				lockedTooltip = "(Cannot change while currently syncing. Disconnect first.)",
+				transparency = self.props.transparency,
+				layoutOrder = layoutIncrement(),
+
+				options = teamCreateModes,
+			}),
+
+			TeamCreateConflictBehavior = e(Setting, {
+				id = "teamCreateConflictBehavior",
+				name = "Teammate Conflicts",
+				description = "What to do when your files would overwrite something a teammate synced more recently",
+				transparency = self.props.transparency,
+				layoutOrder = layoutIncrement(),
+				visible = Settings:getBinding("teamCreateMode"):map(function(value)
+					return value ~= "Never"
+				end),
+
+				options = teamCreateConflictBehaviors,
 			}),
 
 			PlaySounds = e(Setting, {

@@ -229,6 +229,30 @@ return function()
 		expect(patch.removed[1]).to.equal(unknownChild)
 	end)
 
+	it("should never remove Team Create bookkeeping", function()
+		local knownInstances = InstanceMap.new()
+		local virtualInstances = {
+			ROOT = {
+				ClassName = "Folder",
+				Name = "ServerStorage",
+				Properties = {},
+				Children = {},
+			},
+		}
+
+		local rootInstance = Instance.new("Folder")
+		local bookkeeping = Instance.new("Folder")
+		bookkeeping.Name = "__RojoTeamCreate"
+		bookkeeping.Parent = rootInstance
+		knownInstances:insert("ROOT", rootInstance)
+
+		local ok, patch = diff(knownInstances, virtualInstances, "ROOT")
+
+		assert(ok, tostring(patch))
+
+		assert(isEmpty(patch.removed))
+	end)
+
 	it("should generate an empty patch if unknown children should be ignored", function()
 		local knownInstances = InstanceMap.new()
 		local virtualInstances = {

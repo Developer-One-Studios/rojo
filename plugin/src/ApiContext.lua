@@ -13,6 +13,7 @@ local validateApiRead = Types.ifEnabled(Types.ApiReadResponse)
 local validateApiSocketPacket = Types.ifEnabled(Types.ApiSocketPacket)
 local validateApiSerialize = Types.ifEnabled(Types.ApiSerializeResponse)
 local validateApiRefPatch = Types.ifEnabled(Types.ApiRefPatchResponse)
+local validateApiFingerprints = Types.ifEnabled(Types.ApiFingerprintsResponse)
 
 local function rejectFailedRequests(response)
 	if response.code >= 400 then
@@ -31,7 +32,7 @@ local function rejectWrongProtocolVersion(infoResponseBody)
 			.. "\nMake sure you have matching versions of both the Rojo plugin and server!"
 			.. "\n\nYour client is version %s, with protocol version %s. It expects server version %s."
 			.. "\nYour server is version %s, with protocol version %s."
-			.. "\n\nGo to https://github.com/rojo-rbx/rojo for more details."
+			.. "\n\nGo to https://github.com/Developer-One-Studios/rojo for more details."
 		):format(
 			Version.display(Config.version),
 			Config.protocolVersion,
@@ -307,6 +308,28 @@ function ApiContext:serialize(ids: { string })
 			assert(validateApiSerialize(response_body))
 
 			return response_body
+		end)
+end
+
+--[[
+	Fetches content fingerprints for the given instance IDs. Instances that the
+	server doesn't know about are left out of the result.
+]]
+function ApiContext:fingerprints(ids: { string })
+	local url = ("%s/api/fingerprints"):format(self.__baseUrl)
+	local request_body = Http.msgpackEncode({ sessionId = self.__sessionId, ids = ids })
+
+	return Http.post(url, request_body)
+		:andThen(rejectFailedRequests)
+		:andThen(Http.Response.msgpack)
+		:andThen(function(response_body)
+			if response_body.sessionId ~= self.__sessionId then
+				return Promise.reject("Server changed ID")
+			end
+
+			assert(validateApiFingerprints(response_body))
+
+			return response_body.fingerprints
 		end)
 end
 

@@ -25,6 +25,8 @@ local preloadAssets = require(Plugin.preloadAssets)
 local soundPlayer = require(Plugin.soundPlayer)
 local ignorePlaceIds = require(Plugin.ignorePlaceIds)
 local timeUtil = require(Plugin.timeUtil)
+local TeamCreate = require(Plugin.TeamCreate)
+local Presence = require(Plugin.TeamCreate.Presence)
 local Theme = require(script.Theme)
 
 local Page = require(script.Page)
@@ -134,6 +136,7 @@ function App:init()
 			timestamp = os.time(),
 		},
 		notifications = {},
+		teammates = {},
 		toolbarIcon = Assets.Images.PluginButton,
 	})
 
@@ -174,6 +177,7 @@ function App:init()
 end
 
 function App:willUnmount()
+	self.unmounting = true
 	self:endSession()
 
 	self.waypointConnection:Disconnect()
@@ -321,6 +325,10 @@ function App:getHostAndPort()
 	return if #host > 0 then host else Config.defaultHost, if #port > 0 then port else Config.defaultPort
 end
 
+-- The sync lock is only used when Team Create mode is off, which keeps that
+-- mode the same as upstream Rojo: one person syncing at a time. In Team Create
+-- mode, Presence holds the lock on everyone's behalf to keep out plugins that
+-- can't sync alongside other people.
 function App:isSyncLockAvailable()
 	if #Players:GetPlayers() == 0 then
 		-- Team Create is not active, so no one can be holding the lock
@@ -438,7 +446,7 @@ function App:checkSyncReminder()
 		return
 	end
 
-	if self.serveSession ~= nil or not self:isSyncLockAvailable() then
+	if self.serveSession ~= nil or (not TeamCreate.isEnabled() and not self:isSyncLockAvailable()) then
 		-- Already syncing or cannot sync, no reason to remind
 		return
 	end
@@ -600,25 +608,226 @@ function App:useRunningConnectionInfo()
 	self.setPort(port)
 end
 
-function App:startSession()
-	local claimedLock, priorOwner = self:claimSyncLock()
-	if not claimedLock then
-		local msg = string.format("Could not sync because user '%s' is already syncing", tostring(priorOwner))
+local function describeConflict(conflict): string
+	local elapsed = math.max(0, math.floor((TeamCreate.now() - conflict.time) / 1000))
+	local action = if conflict.kind == "update"
+		then "synced a newer version"
+		elseif conflict.kind == "add" then "removed it"
+		else "added or changed it"
 
-		Log.warn(msg)
-		self:addNotification({
-			text = msg,
-			timeout = 10,
-		})
-		self:setState({
-			appStatus = AppStatus.Error,
-			errorMessage = msg,
-			toolbarIcon = Assets.Images.PluginButtonWarning,
-		})
+	return string.format(
+		"%s (%s %s %s)",
+		conflict.path,
+		conflict.userName or "a teammate",
+		action,
+		timeUtil.elapsedToText(elapsed)
+	)
+end
 
+local function summarizeConflicts(conflicts, limit: number): string
+	local lines = {}
+	for index, conflict in conflicts do
+		if index > limit then
+			table.insert(lines, string.format("...and %d more", #conflicts - limit))
+			break
+		end
+		table.insert(lines, describeConflict(conflict))
+	end
+
+	return table.concat(lines, "\n")
+end
+
+function App:notifyConflicts(serveSession, conflicts, details)
+	if #conflicts == 0 then
 		return
 	end
 
+	local allLines = {}
+	for _, conflict in conflicts do
+		table.insert(allLines, "  " .. describeConflict(conflict))
+	end
+	Log.warn("Rojo held back changes that conflict with teammates' newer work:\n{}", table.concat(allLines, "\n"))
+
+	if details.canOverwrite and not Settings:get("showNotifications") then
+		-- There'd be no way to choose what to do with held changes, so keep
+		-- teammates' versions, as if the user chose to.
+		serveSession:discardHeldChanges()
+		return
+	end
+
+	if details.canOverwrite then
+		-- The buttons act on everything that's held, including changes from
+		-- earlier notifications that weren't answered, so list all of them.
+		local held = serveSession:getHeldConflicts()
+		if #held > 0 then
+			conflicts = held
+		end
+	end
+
+	local count = if #conflicts == 1 then "1 change" else string.format("%d changes", #conflicts)
+
+	if details.initial then
+		self:addNotification({
+			text = string.format(
+				"Kept your teammates' newer versions of %s instead of your files:\n%s\nPull their changes to get up to date.",
+				count,
+				summarizeConflicts(conflicts, 3)
+			),
+			timeout = 20,
+		})
+	elseif details.canOverwrite then
+		-- This notification lists every held change, so older ones are out of
+		-- date. Only keep one around so its buttons do what it says.
+		if self.dismissConflictNotification ~= nil then
+			self.dismissConflictNotification()
+		end
+
+		self.dismissConflictNotification = self:addNotification({
+			text = string.format(
+				"Didn't sync %s that would overwrite newer work from teammates:\n%s",
+				count,
+				summarizeConflicts(conflicts, 3)
+			),
+			timeout = 30,
+			actions = {
+				Overwrite = {
+					text = "Overwrite",
+					style = "Bordered",
+					layoutOrder = 2,
+					onClick = function()
+						serveSession:overwriteHeldChanges()
+					end,
+				},
+				Keep = {
+					text = "Keep Theirs",
+					style = "Solid",
+					layoutOrder = 1,
+					onClick = function()
+						serveSession:discardHeldChanges()
+					end,
+				},
+			},
+		})
+	else
+		self:addNotification({
+			text = string.format(
+				"Skipped %s that would overwrite newer work from teammates:\n%s",
+				count,
+				summarizeConflicts(conflicts, 3)
+			),
+			timeout = 15,
+		})
+	end
+end
+
+function App:startPresence(user, projectName: string)
+	self:stopPresence()
+
+	local presence = Presence.new(user)
+	local announced = false
+
+	self.presence = presence
+	self.disconnectPresence = presence:onChanged(function(others, previous)
+		if self.presence ~= presence then
+			return
+		end
+
+		self:setState({
+			teammates = others,
+		})
+
+		local previousById = {}
+		for _, session in previous do
+			previousById[session.userId] = session
+		end
+		local currentById = {}
+		for _, session in others do
+			currentById[session.userId] = session
+		end
+
+		if not announced then
+			announced = true
+
+			if #others > 0 then
+				local names = {}
+				for _, session in others do
+					table.insert(names, session.userName)
+				end
+				self:addNotification({
+					text = "Also syncing to this place: " .. table.concat(names, ", "),
+				})
+			end
+		else
+			for _, session in others do
+				if previousById[session.userId] == nil then
+					self:addNotification({
+						text = string.format("%s started syncing to this place.", session.userName),
+					})
+				end
+			end
+			for _, session in previous do
+				if currentById[session.userId] == nil then
+					self:addNotification({
+						text = string.format("%s stopped syncing to this place.", session.userName),
+					})
+				end
+			end
+		end
+
+		for _, session in others do
+			local before = previousById[session.userId]
+			if before ~= nil and before.legacy == session.legacy and before.projectName == session.projectName then
+				continue
+			end
+
+			if session.legacy then
+				self:addNotification({
+					text = string.format(
+						"%s is syncing with a Rojo plugin that doesn't support Team Create, so their sync can overwrite your work.",
+						session.userName
+					),
+					timeout = 15,
+				})
+			elseif session.projectName ~= nil and session.projectName ~= projectName then
+				self:addNotification({
+					text = string.format(
+						"%s is syncing a different project ('%s') to this place.",
+						session.userName,
+						session.projectName
+					),
+					timeout = 15,
+				})
+			end
+		end
+	end)
+
+	local success, err = pcall(presence.start, presence, { projectName = projectName })
+	if not success then
+		Log.warn("Could not share Rojo sync status with teammates: {}", err)
+	end
+end
+
+function App:stopPresence()
+	if self.disconnectPresence ~= nil then
+		self.disconnectPresence()
+		self.disconnectPresence = nil
+	end
+
+	if self.presence ~= nil then
+		self.presence:stop()
+		self.presence = nil
+	end
+
+	-- Roact doesn't allow setState while unmounting, which is when Studio
+	-- closes with a session still connected.
+	if not self.unmounting and next(self.state.teammates or {}) ~= nil then
+		self:setState({
+			teammates = {},
+		})
+	end
+end
+
+function App:startSession()
 	local host, port = self:getHostAndPort()
 
 	local baseUrl = if string.find(host, "^https?://")
@@ -626,9 +835,34 @@ function App:startSession()
 		else string.format("http://%s:%s", host, port)
 	local apiContext = ApiContext.new(baseUrl)
 
+	-- In Team Create, everyone syncing gets their own server, and these
+	-- sessions coordinate through the place so they don't overwrite each other.
+	local teamCreateUser = if TeamCreate.isEnabled() then TeamCreate.getLocalUser() else nil
+
+	if teamCreateUser == nil then
+		local claimedLock, priorOwner = self:claimSyncLock()
+		if not claimedLock then
+			local msg = string.format("Could not sync because user '%s' is already syncing", tostring(priorOwner))
+
+			Log.warn(msg)
+			self:addNotification({
+				text = msg,
+				timeout = 10,
+			})
+			self:setState({
+				appStatus = AppStatus.Error,
+				errorMessage = msg,
+				toolbarIcon = Assets.Images.PluginButtonWarning,
+			})
+
+			return
+		end
+	end
+
 	local serveSession = ServeSession.new({
 		apiContext = apiContext,
 		twoWaySync = Settings:get("twoWaySync"),
+		teamCreate = teamCreateUser,
 	})
 
 	serveSession:setUpdateLoadingTextCallback(function(text: string)
@@ -699,9 +933,21 @@ function App:startSession()
 			self:addNotification({
 				text = string.format("Connected to session '%s' at %s.", details, address),
 			})
+
+			if teamCreateUser ~= nil then
+				self:startPresence(teamCreateUser, details)
+
+				if Settings:get("twoWaySync") then
+					self:addNotification({
+						text = "Two-way sync is on. In Team Create, changes your teammates sync will also be written into your files.",
+						timeout = 15,
+					})
+				end
+			end
 		elseif status == ServeSession.Status.Disconnected then
 			self.serveSession = nil
 			self:releaseSyncLock()
+			self:stopPresence()
 			self:clearRunningConnectionInfo()
 			self:setState({
 				patchData = {
@@ -738,67 +984,85 @@ function App:startSession()
 		end
 	end)
 
-	serveSession:setConfirmCallback(function(instanceMap, patch, serverInfo)
-		if PatchSet.isEmpty(patch) then
-			Log.trace("Accepting patch without confirmation because it is empty")
-			return "Accept"
-		end
+	serveSession:setConflictCallback(function(conflicts, details)
+		self:notifyConflicts(serveSession, conflicts, details)
+	end)
 
-		-- Play solo auto-connect does not require confirmation
-		if self:isAutoConnectPlaytestServerAvailable() then
-			Log.trace("Accepting patch without confirmation because play solo auto-connect is enabled")
-			return "Accept"
-		end
+	serveSession:setConfirmCallback(function(instanceMap, patch, serverInfo, conflicts)
+		conflicts = conflicts or {}
 
-		local confirmationBehavior = Settings:get("confirmationBehavior")
-		if confirmationBehavior == "Initial" then
-			-- Only confirm if we haven't synced this project yet this session
-			if self.knownProjects[serverInfo.projectName] then
-				Log.trace(
-					"Accepting patch without confirmation because project has already been connected and behavior is set to Initial"
-				)
-				return "Accept"
+		-- Changes that would overwrite teammates' newer work are never
+		-- applied without asking, whatever the confirmation behavior.
+		local askAboutConflicts = #conflicts > 0 and Settings:get("teamCreateConflictBehavior") == "Ask"
+
+		local function shouldSkipConfirmation()
+			if PatchSet.isEmpty(patch) then
+				Log.trace("Accepting patch without confirmation because it is empty")
+				return true
 			end
-		elseif confirmationBehavior == "Large Changes" then
-			-- Only confirm if the patch impacts many instances
-			if PatchSet.countInstances(patch) < Settings:get("largeChangesConfirmationThreshold") then
-				Log.trace(
-					"Accepting patch without confirmation because patch is small and behavior is set to Large Changes"
-				)
-				return "Accept"
+
+			-- Play solo auto-connect does not require confirmation
+			if self:isAutoConnectPlaytestServerAvailable() then
+				Log.trace("Accepting patch without confirmation because play solo auto-connect is enabled")
+				return true
 			end
-		elseif confirmationBehavior == "Unlisted PlaceId" then
-			-- Only confirm if the current placeId is not in the servePlaceIds allowlist
-			if serverInfo.expectedPlaceIds then
-				local isListed = table.find(serverInfo.expectedPlaceIds, game.PlaceId) ~= nil
-				if isListed then
+
+			local confirmationBehavior = Settings:get("confirmationBehavior")
+			if confirmationBehavior == "Initial" then
+				-- Only confirm if we haven't synced this project yet this session
+				if self.knownProjects[serverInfo.projectName] then
 					Log.trace(
-						"Accepting patch without confirmation because placeId is listed and behavior is set to Unlisted PlaceId"
+						"Accepting patch without confirmation because project has already been connected and behavior is set to Initial"
 					)
-					return "Accept"
+					return true
+				end
+			elseif confirmationBehavior == "Large Changes" then
+				-- Only confirm if the patch impacts many instances
+				if PatchSet.countInstances(patch) < Settings:get("largeChangesConfirmationThreshold") then
+					Log.trace(
+						"Accepting patch without confirmation because patch is small and behavior is set to Large Changes"
+					)
+					return true
+				end
+			elseif confirmationBehavior == "Unlisted PlaceId" then
+				-- Only confirm if the current placeId is not in the servePlaceIds allowlist
+				if serverInfo.expectedPlaceIds then
+					local isListed = table.find(serverInfo.expectedPlaceIds, game.PlaceId) ~= nil
+					if isListed then
+						Log.trace(
+							"Accepting patch without confirmation because placeId is listed and behavior is set to Unlisted PlaceId"
+						)
+						return true
+					end
+				end
+			elseif confirmationBehavior == "Never" then
+				Log.trace("Accepting patch without confirmation because behavior is set to Never")
+				return true
+			end
+
+			-- The datamodel name gets overwritten by Studio, making confirmation of it intrusive
+			-- and unnecessary. This special case allows it to be accepted without confirmation.
+			if
+				PatchSet.hasAdditions(patch) == false
+				and PatchSet.hasRemoves(patch) == false
+				and PatchSet.containsOnlyInstance(patch, instanceMap, game)
+			then
+				local datamodelUpdates = PatchSet.getUpdateForInstance(patch, instanceMap, game)
+				if
+					datamodelUpdates ~= nil
+					and next(datamodelUpdates.changedProperties) == nil
+					and datamodelUpdates.changedClassName == nil
+				then
+					Log.trace("Accepting patch without confirmation because it only contains a datamodel name change")
+					return true
 				end
 			end
-		elseif confirmationBehavior == "Never" then
-			Log.trace("Accepting patch without confirmation because behavior is set to Never")
-			return "Accept"
+
+			return false
 		end
 
-		-- The datamodel name gets overwritten by Studio, making confirmation of it intrusive
-		-- and unnecessary. This special case allows it to be accepted without confirmation.
-		if
-			PatchSet.hasAdditions(patch) == false
-			and PatchSet.hasRemoves(patch) == false
-			and PatchSet.containsOnlyInstance(patch, instanceMap, game)
-		then
-			local datamodelUpdates = PatchSet.getUpdateForInstance(patch, instanceMap, game)
-			if
-				datamodelUpdates ~= nil
-				and next(datamodelUpdates.changedProperties) == nil
-				and datamodelUpdates.changedClassName == nil
-			then
-				Log.trace("Accepting patch without confirmation because it only contains a datamodel name change")
-				return "Accept"
-			end
+		if not askAboutConflicts and shouldSkipConfirmation() then
+			return "Accept"
 		end
 
 		self:setState({
@@ -809,6 +1073,7 @@ function App:startSession()
 			patchTree = PatchTree.build(patch, instanceMap, { "Property", "Current", "Incoming" }),
 			confirmData = {
 				serverInfo = serverInfo,
+				conflicts = if askAboutConflicts then conflicts else nil,
 			},
 			toolbarIcon = Assets.Images.PluginButton,
 		})
@@ -918,6 +1183,7 @@ function App:render()
 
 					ConfirmingPage = createPageElement(AppStatus.Confirming, {
 						confirmData = self.state.confirmData,
+						describeConflict = describeConflict,
 						patchTree = self.state.patchTree,
 						createPopup = not self.state.guiEnabled,
 
@@ -926,6 +1192,9 @@ function App:render()
 						end,
 						onAccept = function()
 							self.confirmationBindable:Fire("Accept")
+						end,
+						onOverwrite = function()
+							self.confirmationBindable:Fire("Overwrite")
 						end,
 						onReject = function()
 							self.confirmationBindable:Fire("Reject")
@@ -939,6 +1208,7 @@ function App:render()
 					Connected = createPageElement(AppStatus.Connected, {
 						projectName = self.state.projectName,
 						address = self.state.address,
+						teammates = self.state.teammates,
 						patchTree = self.state.patchTree,
 						patchData = self.state.patchData,
 						serveSession = self.serveSession,
