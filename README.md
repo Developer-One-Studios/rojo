@@ -1,5 +1,5 @@
 <div align="center">
-    <img src="assets/brand_images/logo-512.png" alt="Rojo" height="217" />
+    <img src="assets/brand_images/team-create-logo.webp" alt="Rojo Team Create" width="480" />
 </div>
 
 <div>&nbsp;</div>

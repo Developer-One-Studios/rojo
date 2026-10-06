@@ -23,7 +23,12 @@ local Roact = require(Packages.Roact)
 
 local strict = require(script.Parent.Parent.strict)
 
-local BRAND_COLOR = Color3.fromHex("E13835")
+-- Matches the yellow of the Rojo Team Create logo.
+local BRAND_COLOR = Color3.fromHex("FEED04")
+
+-- The brand yellow is too light for white text or icons on top of it, so
+-- anything drawn over it is nearly black instead.
+local ON_BRAND_COLOR = Color3.fromHex("141414")
 
 local Context = Roact.createContext({})
 
@@ -63,15 +68,16 @@ function StudioProvider:updateTheme()
 		SubTextColor = studioTheme:GetColor(Enum.StudioStyleGuideColor.SubText),
 		Button = {
 			Solid = {
-				-- Solid uses brand theming, not Studio theming.
-				ActionFillColor = Color3.fromHex("FFFFFF"),
+				-- Solid uses brand theming, not Studio theming. Lightening the
+				-- yellow barely shows, so pressing darkens it instead.
+				ActionFillColor = ON_BRAND_COLOR,
 				ActionFillTransparency = 0.8,
 				Enabled = {
-					TextColor = Color3.fromHex("FFFFFF"),
+					TextColor = ON_BRAND_COLOR,
 					BackgroundColor = BRAND_COLOR,
 				},
 				Disabled = {
-					TextColor = Color3.fromHex("FFFFFF"),
+					TextColor = ON_BRAND_COLOR,
 					BackgroundColor = BRAND_COLOR,
 				},
 			},
@@ -103,7 +109,7 @@ function StudioProvider:updateTheme()
 		Checkbox = {
 			Active = {
 				-- Active checkboxes use brand theming, not Studio theming.
-				IconColor = Color3.fromHex("FFFFFF"),
+				IconColor = ON_BRAND_COLOR,
 				BackgroundColor = BRAND_COLOR,
 			},
 			Inactive = {
