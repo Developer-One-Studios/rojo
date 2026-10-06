@@ -4,10 +4,7 @@ This fork lets several people sync into the same Team Create place at the same t
 
 ## Setup
 
-Everyone on the team needs both halves of this fork:
-
-1. **The server.** Build it with `cargo install --git https://github.com/Developer-One-Studios/rojo rojo`, or download it from this repository's releases. `rojo --version` should print a version ending in `-tc.N`.
-2. **The plugin.** Run `rojo plugin install` with the fork's server, then restart Roblox Studio.
+Everyone on the team needs both halves of this fork: the server, and the plugin installed with `rojo plugin install`. Step-by-step instructions are in the [README](README.md#setup).
 
 Then work as usual: clone the project's repository, run `rojo serve`, and connect from the plugin. In a Team Create place, the plugin turns on Team Create mode by itself.
 
