@@ -19,6 +19,7 @@ local Reconciler = require(script.Parent.Reconciler)
 local strict = require(script.Parent.strict)
 local Settings = require(script.Parent.Settings)
 local orderSwaps = require(script.Parent.orderSwaps)
+local Coordinator = require(script.Parent.TeamCreate.Coordinator)
 
 local Status = strict("Session.Status", {
 	NotStarted = "NotStarted",
@@ -63,6 +64,18 @@ ServeSession.Status = Status
 local validateServeOptions = t.strictInterface({
 	apiContext = t.table,
 	twoWaySync = t.boolean,
+
+	-- When present, the session coordinates with other people syncing into
+	-- the same Team Create place.
+	teamCreate = t.optional(t.strictInterface({
+		userId = t.number,
+		userName = t.string,
+		-- Where Team Create bookkeeping is stored; tests use this to stay out
+		-- of the place's ServerStorage.
+		root = t.optional(t.Instance),
+		-- Overrides the teamCreateConflictBehavior setting.
+		conflictBehavior = t.optional(t.string),
+	})),
 })
 
 function ServeSession.new(options)
@@ -97,6 +110,33 @@ function ServeSession.new(options)
 	end)
 	table.insert(connections, connection)
 
+	local teamCreate = nil
+	if options.teamCreate ~= nil then
+		teamCreate = Coordinator.new({
+			apiContext = options.apiContext,
+			instanceMap = instanceMap,
+			reconciler = reconciler,
+			userId = options.teamCreate.userId,
+			userName = options.teamCreate.userName,
+			root = options.teamCreate.root,
+			conflictBehavior = options.teamCreate.conflictBehavior,
+			applyPatch = function(patch, applyOptions)
+				self:__applyPatch(patch, applyOptions)
+			end,
+			queuePatch = function(patch, applyOptions)
+				self:__queuePatch(patch, applyOptions)
+			end,
+			queueJob = function(job)
+				self:__queueJob(job)
+			end,
+			onConflicts = function(conflicts, details)
+				if self.__conflictCallback ~= nil then
+					self.__conflictCallback(conflicts, details)
+				end
+			end,
+		})
+	end
+
 	self = {
 		__status = Status.NotStarted,
 		__apiContext = options.apiContext,
@@ -109,6 +149,10 @@ function ServeSession.new(options)
 		__precommitCallbacks = {},
 		__postcommitCallbacks = {},
 		__updateLoadingText = function() end,
+		__teamCreate = teamCreate,
+		__conflictCallback = nil,
+		__patchQueue = {},
+		__processingPatchQueue = false,
 	}
 
 	setmetatable(self, ServeSession)
@@ -137,6 +181,48 @@ end
 
 function ServeSession:setConfirmCallback(callback)
 	self.__userConfirmCallback = callback
+end
+
+--[[
+	Sets the function that's told about changes that weren't applied because
+	they'd overwrite a teammate's newer work in Team Create. It's called with
+	the list of conflicts and whether they're being held so that the user can
+	still choose to overwrite them with `overwriteHeldChanges`.
+]]
+function ServeSession:setConflictCallback(callback)
+	self.__conflictCallback = callback
+end
+
+function ServeSession:isTeamCreateEnabled(): boolean
+	return self.__teamCreate ~= nil
+end
+
+function ServeSession:getHeldConflicts()
+	if self.__teamCreate == nil then
+		return {}
+	end
+
+	return self.__teamCreate:getHeldConflicts()
+end
+
+--[[
+	Applies every held change, replacing teammates' newer work with ours.
+]]
+function ServeSession:overwriteHeldChanges()
+	if self.__teamCreate == nil then
+		return
+	end
+
+	local patch = self.__teamCreate:takeHeldChanges()
+	if not PatchSet.isEmpty(patch) then
+		self:__queuePatch(patch, { force = true })
+	end
+end
+
+function ServeSession:discardHeldChanges()
+	if self.__teamCreate ~= nil then
+		self.__teamCreate:discardHeldChanges()
+	end
 end
 
 function ServeSession:setUpdateLoadingTextCallback(callback)
@@ -196,6 +282,22 @@ function ServeSession:start()
 	self.__apiContext
 		:connect()
 		:andThen(function(serverInfo)
+			if self.__teamCreate ~= nil then
+				self:setLoadingText("Checking Team Create support...")
+
+				-- Without fingerprints we can't tell our changes apart from
+				-- teammates', so syncing could silently overwrite their work.
+				if not self.__teamCreate:isServerSupported(serverInfo.rootInstanceId) then
+					return Promise.reject(
+						"This Rojo server can't sync safely with teammates in Team Create."
+							.. "\nMake sure you're running the Team Create build of the Rojo server, the same build as this plugin."
+							.. "\nTo sync without protection against overwriting teammates' work, set 'Team Create Mode' to 'Never' in the Rojo settings."
+					)
+				end
+
+				self.__teamCreate:start()
+			end
+
 			self:setLoadingText("Loading initial data from server...")
 			return self:__initialSync(serverInfo):andThen(function()
 				self:setLoadingText("Starting sync loop...")
@@ -211,7 +313,7 @@ function ServeSession:start()
 						Log.debug("Received {} messages from Rojo server", #messagesPacket.messages)
 
 						for _, message in messagesPacket.messages do
-							self:__applyPatch(message)
+							self:__queuePatch(message)
 						end
 						self.__apiContext:setMessageCursor(messagesPacket.messageCursor)
 					end,
@@ -404,7 +506,62 @@ function ServeSession:__replaceInstances(idList)
 	end
 end
 
-function ServeSession:__applyPatch(patch)
+--[[
+	Patches are applied one at a time, in the order they arrive. Applying a
+	patch can yield (Team Create checks talk to the server), and the next
+	patch must not start applying in the meantime.
+]]
+function ServeSession:__queuePatch(patch, options)
+	self:__queueEntry({ patch = patch, options = options })
+end
+
+function ServeSession:__queueJob(job: () -> ())
+	self:__queueEntry({ job = job })
+end
+
+function ServeSession:__queueEntry(entry)
+	table.insert(self.__patchQueue, entry)
+
+	if self.__processingPatchQueue then
+		return
+	end
+	self.__processingPatchQueue = true
+
+	task.spawn(function()
+		while #self.__patchQueue > 0 do
+			local queued = table.remove(self.__patchQueue, 1)
+
+			if self.__status == Status.Disconnected then
+				continue
+			end
+
+			local success, err
+			if queued.job ~= nil then
+				success, err = pcall(queued.job)
+			else
+				success, err = pcall(self.__applyPatch, self, queued.patch, queued.options)
+			end
+
+			if not success then
+				-- Report the error from its own thread, since Log.error throws
+				-- and this loop has to keep going for later patches.
+				task.spawn(Log.error, "Failed to apply changes from the Rojo server: {}", err)
+			end
+		end
+
+		self.__processingPatchQueue = false
+	end)
+end
+
+function ServeSession:__applyPatch(patch, options: { force: boolean?, acknowledgements: { any }? }?)
+	-- Team Create preparation may wait on the server, so it happens first. It
+	-- may also modify `patch` to account for teammates' changes, and the full
+	-- patch is still what gets shown to the user.
+	local teamCreatePreparation = nil
+	if self.__teamCreate ~= nil then
+		teamCreatePreparation = self.__teamCreate:prepare(patch)
+	end
+
 	local patchTimestamp = DateTime.now():FormatLocalTime("LTS", "en-us")
 	local historyRecording = ChangeHistoryService:TryBeginRecording("Rojo: Patch " .. patchTimestamp)
 	if not historyRecording then
@@ -423,7 +580,20 @@ function ServeSession:__applyPatch(patch)
 	end
 	Timer.stop()
 
-	local patchApplySuccess, unappliedPatch = pcall(self.__reconciler.applyPatch, self.__reconciler, patch)
+	-- Precommit callbacks can yield, so Team Create checks that depend on the
+	-- current state of the place run after them, right before applying.
+	local teamCreatePlan = nil
+	if self.__teamCreate ~= nil then
+		teamCreatePlan = self.__teamCreate:finalize(
+			patch,
+			teamCreatePreparation,
+			options and options.force,
+			options and options.acknowledgements
+		)
+	end
+	local patchToApply = if teamCreatePlan ~= nil then teamCreatePlan.safe else patch
+
+	local patchApplySuccess, unappliedPatch = pcall(self.__reconciler.applyPatch, self.__reconciler, patchToApply)
 	if not patchApplySuccess then
 		if historyRecording then
 			ChangeHistoryService:FinishRecording(historyRecording, Enum.FinishRecordingOperation.Commit)
@@ -464,6 +634,10 @@ function ServeSession:__applyPatch(patch)
 			"Could not apply all changes requested by the Rojo server:\n{}",
 			PatchSet.humanSummary(self.__instanceMap, unappliedPatch)
 		)
+	end
+
+	if teamCreatePlan ~= nil then
+		self.__teamCreate:commit(teamCreatePlan, unappliedPatch)
 	end
 
 	Timer.start("postcommitCallbacks")
@@ -522,9 +696,26 @@ function ServeSession:__initialSync(serverInfo)
 
 		Log.trace("Computed hydration patch: {:#?}", debugPatch(catchUpPatch))
 
+		-- In Team Create, the place may hold teammates' newer work that our
+		-- files don't have yet. Those changes are split out so the user can
+		-- see them and decide, instead of quietly reverting their teammates.
+		local conflicts = {}
+		local acknowledgements = nil
+		local heldPatch = nil
+		if self.__teamCreate ~= nil then
+			self:setLoadingText("Checking for teammates' changes...")
+
+			local check =
+				self.__teamCreate:checkInitialSync(catchUpPatch, readResponseBody.instances, serverInfo.rootInstanceId)
+			catchUpPatch = check.safe
+			heldPatch = check.held
+			conflicts = check.conflicts
+			acknowledgements = check.acknowledgements
+		end
+
 		local userDecision = "Accept"
 		if self.__userConfirmCallback ~= nil then
-			userDecision = self.__userConfirmCallback(self.__instanceMap, catchUpPatch, serverInfo)
+			userDecision = self.__userConfirmCallback(self.__instanceMap, catchUpPatch, serverInfo, conflicts)
 		end
 
 		if userDecision == "Abort" then
@@ -560,7 +751,24 @@ function ServeSession:__initialSync(serverInfo)
 
 			return self.__apiContext:write(inversePatch)
 		elseif userDecision == "Accept" then
-			self:__applyPatch(catchUpPatch)
+			self:__applyPatch(catchUpPatch, { acknowledgements = acknowledgements })
+
+			if #conflicts > 0 and self.__conflictCallback ~= nil then
+				task.spawn(self.__conflictCallback, conflicts, {
+					canOverwrite = false,
+					initial = true,
+				})
+			end
+
+			return Promise.resolve()
+		elseif userDecision == "Overwrite" then
+			-- The user chose to replace the teammates' work they were shown
+			-- with their files. Only those changes skip the conflict checks:
+			-- teammates may have synced more while the dialog was open.
+			self:__applyPatch(catchUpPatch, { acknowledgements = acknowledgements })
+			if heldPatch ~= nil and not PatchSet.isEmpty(heldPatch) then
+				self:__applyPatch(heldPatch, { force = true })
+			end
 			return Promise.resolve()
 		else
 			return Promise.reject("Invalid user decision: " .. userDecision)
@@ -569,6 +777,11 @@ function ServeSession:__initialSync(serverInfo)
 end
 
 function ServeSession:__stopInternal(err)
+	table.clear(self.__patchQueue)
+	if self.__teamCreate ~= nil then
+		self.__teamCreate:stop()
+	end
+
 	self:__setStatus(Status.Disconnected, err)
 	self.__apiContext:disconnect()
 	self.__instanceMap:stop()

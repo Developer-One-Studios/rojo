@@ -7,6 +7,7 @@ local Packages = script.Parent.Parent.Parent.Packages
 local Log = require(Packages.Log)
 
 local invariant = require(script.Parent.Parent.invariant)
+local TeamCreate = require(script.Parent.Parent.TeamCreate)
 local getProperty = require(script.Parent.getProperty)
 local Error = require(script.Parent.Error)
 local decodeValue = require(script.Parent.decodeValue)
@@ -144,6 +145,12 @@ local function diff(instanceMap, virtualInstances, rootId)
 					return childInstance.Archivable == false
 				end)
 				if success and skip then
+					continue
+				end
+
+				-- Team Create bookkeeping is saved with the place, but it isn't
+				-- part of anyone's project and must survive syncing ServerStorage.
+				if TeamCreate.isInternalInstance(childInstance) then
 					continue
 				end
 

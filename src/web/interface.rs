@@ -267,6 +267,23 @@ pub struct RefPatchResponse<'a> {
     pub patch: SubscribeMessage<'a>,
 }
 
+/// Request body for /api/fingerprints
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FingerprintsRequest {
+    pub session_id: SessionId,
+    pub ids: Vec<Ref>,
+}
+
+/// Response body from /api/fingerprints. IDs that aren't in the tree are left
+/// out of `fingerprints`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FingerprintsResponse {
+    pub session_id: SessionId,
+    pub fingerprints: HashMap<Ref, String>,
+}
+
 /// General response type returned from all Rojo routes
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

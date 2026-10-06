@@ -4,6 +4,7 @@
 
 mod api;
 mod assets;
+mod fingerprint;
 pub mod interface;
 mod origin;
 mod ui;

@@ -15,8 +15,8 @@ use tempfile::{tempdir, TempDir};
 
 use librojo::{
     web_api::{
-        ReadResponse, SerializeRequest, SerializeResponse, ServerInfoResponse, SocketPacket,
-        SocketPacketType,
+        FingerprintsRequest, FingerprintsResponse, ReadResponse, SerializeRequest,
+        SerializeResponse, ServerInfoResponse, SocketPacket, SocketPacketType,
     },
     SessionId,
 };
@@ -242,6 +242,24 @@ impl TestServeSession {
         .unwrap();
 
         client.post(url).body(body).send()
+    }
+
+    pub fn post_api_fingerprints(
+        &self,
+        ids: &[Ref],
+        session_id: SessionId,
+    ) -> Result<FingerprintsResponse, reqwest::Error> {
+        let client = reqwest::blocking::Client::new();
+        let url = format!("http://localhost:{}/api/fingerprints", self.port);
+        let body = serialize_msgpack(&FingerprintsRequest {
+            session_id,
+            ids: ids.to_vec(),
+        })
+        .unwrap();
+
+        let body = client.post(url).body(body).send()?.bytes()?;
+
+        Ok(deserialize_msgpack(&body).expect("Server returned malformed response"))
     }
 
     /// Sends a GET to `/api/rojo` with the given extra request headers and

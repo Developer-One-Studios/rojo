@@ -7,6 +7,8 @@ local Roact = require(Packages.Roact)
 local Settings = require(Plugin.Settings)
 local Theme = require(Plugin.App.Theme)
 local TextButton = require(Plugin.App.Components.TextButton)
+local BorderedContainer = require(Plugin.App.Components.BorderedContainer)
+local ScrollingFrame = require(Plugin.App.Components.ScrollingFrame)
 local StudioPluginGui = require(Plugin.App.Components.Studio.StudioPluginGui)
 local Tooltip = require(Plugin.App.Components.Tooltip)
 local PatchVisualizer = require(Plugin.App.Components.PatchVisualizer)
@@ -14,6 +16,73 @@ local StringDiffVisualizer = require(Plugin.App.Components.StringDiffVisualizer)
 local TableDiffVisualizer = require(Plugin.App.Components.TableDiffVisualizer)
 
 local e = Roact.createElement
+
+local CONFLICT_LIST_HEIGHT = 140
+
+--[[
+	Lists changes that are being held back because they'd overwrite work a
+	teammate synced more recently.
+]]
+local function ConflictList(props)
+	return Theme.with(function(theme)
+		local rows = {
+			Layout = e("UIListLayout", {
+				FillDirection = Enum.FillDirection.Vertical,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 2),
+			}),
+		}
+
+		for index, conflict in props.conflicts do
+			rows["Conflict" .. index] = e("TextLabel", {
+				Text = props.describeConflict(conflict),
+				FontFace = theme.Font.Thin,
+				TextSize = theme.TextSize.Small,
+				TextColor3 = theme.SubTextColor,
+				TextTransparency = props.transparency,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextWrapped = true,
+				Size = UDim2.new(1, -4, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				LayoutOrder = index,
+			})
+		end
+
+		local count = #props.conflicts
+		local headingHeight = (theme.TextSize.Body + 3) * 2
+
+		return e(BorderedContainer, {
+			transparency = props.transparency,
+			size = UDim2.new(1, 0, 0, CONFLICT_LIST_HEIGHT),
+			layoutOrder = props.layoutOrder,
+		}, {
+			Heading = e("TextLabel", {
+				Text = string.format(
+					"Holding back %s that would overwrite newer work from teammates:",
+					if count == 1 then "1 change" else count .. " changes"
+				),
+				FontFace = theme.Font.Main,
+				TextSize = theme.TextSize.Body,
+				TextColor3 = theme.Diff.Warning,
+				TextTransparency = props.transparency,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				TextWrapped = true,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Size = UDim2.new(1, -16, 0, headingHeight),
+				Position = UDim2.new(0, 8, 0, 6),
+				BackgroundTransparency = 1,
+			}),
+
+			List = e(ScrollingFrame, {
+				size = UDim2.new(1, -16, 1, -(headingHeight + 14)),
+				position = UDim2.new(0, 8, 0, headingHeight + 8),
+				transparency = props.transparency,
+			}, rows),
+		})
+	end)
+end
 
 local ConfirmingPage = Roact.Component:extend("ConfirmingPage")
 
@@ -32,6 +101,10 @@ function ConfirmingPage:init()
 end
 
 function ConfirmingPage:render()
+	local conflicts = self.props.confirmData.conflicts
+	local hasConflicts = conflicts ~= nil and #conflicts > 0
+	local conflictSpace = if hasConflicts then CONFLICT_LIST_HEIGHT + 10 else 0
+
 	return Theme.with(function(theme)
 		local pageContent = Roact.createFragment({
 			Title = e("TextLabel", {
@@ -49,8 +122,17 @@ function ConfirmingPage:render()
 				BackgroundTransparency = 1,
 			}),
 
+			Conflicts = if hasConflicts
+				then e(ConflictList, {
+					conflicts = conflicts,
+					describeConflict = self.props.describeConflict,
+					transparency = self.props.transparency,
+					layoutOrder = 2,
+				})
+				else nil,
+
 			PatchVisualizer = e(PatchVisualizer, {
-				size = UDim2.new(1, 0, 1, -100),
+				size = UDim2.new(1, 0, 1, -100 - conflictSpace),
 				transparency = self.props.transparency,
 				layoutOrder = 3,
 
@@ -103,15 +185,31 @@ function ConfirmingPage:render()
 					})
 					else nil,
 
+				Overwrite = if hasConflicts
+					then e(TextButton, {
+						text = "Overwrite",
+						style = "Bordered",
+						transparency = self.props.transparency,
+						layoutOrder = 3,
+						onClick = self.props.onOverwrite,
+					}, {
+						Tip = e(Tooltip.Trigger, {
+							text = "Sync all of your changes, replacing your teammates' newer work",
+						}),
+					})
+					else nil,
+
 				Accept = e(TextButton, {
 					text = "Accept",
 					style = "Solid",
 					transparency = self.props.transparency,
-					layoutOrder = 3,
+					layoutOrder = 4,
 					onClick = self.props.onAccept,
 				}, {
 					Tip = e(Tooltip.Trigger, {
-						text = "Pull Rojo server changes to Studio",
+						text = if hasConflicts
+							then "Sync your other changes, and keep your teammates' newer work"
+							else "Pull Rojo server changes to Studio",
 					}),
 				}),
 
