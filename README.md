@@ -10,8 +10,6 @@ This is Developer One Studios' version of [Rojo](https://github.com/rojo-rbx/roj
 
 Each person runs `rojo serve` on their own copy of the project, as usual. When your files would overwrite something a teammate synced more recently, Rojo holds your change back and asks first, instead of quietly undoing their work. How that works is explained in [TEAM_CREATE.md](TEAM_CREATE.md).
 
-This repository is private, and only for Developer One Studios developers.
-
 ## Setup
 
 Everyone who syncs needs **both** parts from this repository: the `rojo` server you run in a terminal, and the Studio plugin. They only work together. Mixing them with regular Rojo is covered under [Working with regular Rojo](#working-with-regular-rojo).
@@ -22,21 +20,7 @@ Everyone who syncs needs **both** parts from this repository: the `rojo` server 
 
 Rokit downloads the server from this repository's [Releases](https://github.com/Developer-One-Studios/rojo/releases) page. Releases currently have a Windows build only. On Mac or Linux, [build it yourself](#by-building-it-yourself) for now.
 
-1. Because the repository is private, Rokit needs a GitHub token to download it. Create a [personal access token](https://github.com/settings/tokens) that can read this repository: a classic token with the `repo` scope, or a fine-grained token with read access to **Contents** for `Developer-One-Studios/rojo`. Then run:
-
-    ```bash
-    rokit authenticate github --token YOUR_TOKEN
-    ```
-
-    If you're signed in to the [GitHub CLI](https://cli.github.com), you can use its token instead of creating one:
-
-    ```bash
-    rokit authenticate github --token "$(gh auth token)"
-    ```
-
-    If you gave Rokit a token before, it may not be able to read private repositories. In that case Rokit says `no release was found`, and you need to replace the token as shown above.
-
-2. In your game project's `rokit.toml`, point `rojo` at this repository instead of `rojo-rbx/rojo`:
+1. In your game project's `rokit.toml`, point `rojo` at this repository instead of `rojo-rbx/rojo`:
 
     ```toml
     [tools]
@@ -53,7 +37,7 @@ Rokit downloads the server from this repository's [Releases](https://github.com/
 
     If your project doesn't have a `rokit.toml` yet, `rokit add Developer-One-Studios/rojo@7.7.1-tc.1 rojo` creates the entry for you.
 
-3. Check that it worked. This should print a version ending in `-tc.1`:
+2. Check that it worked. This should print a version ending in `-tc.1`:
 
     ```bash
     rojo --version
@@ -145,7 +129,7 @@ To sync at the same time safely, everyone needs this version.
 
 ## Updating
 
-When a new version is released, change the version in your `rokit.toml` (or pull and rebuild), run `rojo plugin install` again, and restart Studio. Because this repository is private, the plugin can't check for updates itself, so keep an eye on the Releases page.
+When a new version is released, the plugin lets you know. Change the version in your `rokit.toml` (or pull and rebuild), run `rojo plugin install` again, and restart Studio.
 
 ## About Rojo
 
