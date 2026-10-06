@@ -16,10 +16,12 @@ use crate::{
     serve_session::ServeSession,
     snapshot::{InstanceWithMeta, PatchSet, PatchUpdate},
     web::{
+        fingerprint::fingerprint,
         interface::{
-            ErrorResponse, Instance, MessagesPacket, OpenResponse, ReadResponse,
-            ServerInfoResponse, SocketPacket, SocketPacketBody, SocketPacketType, SubscribeMessage,
-            WriteRequest, WriteResponse, PROTOCOL_VERSION, SERVER_VERSION,
+            ErrorResponse, FingerprintsRequest, FingerprintsResponse, Instance, MessagesPacket,
+            OpenResponse, ReadResponse, ServerInfoResponse, SocketPacket, SocketPacketBody,
+            SocketPacketType, SubscribeMessage, WriteRequest, WriteResponse, PROTOCOL_VERSION,
+            SERVER_VERSION,
         },
         origin::canonical,
         util::{deserialize_msgpack, msgpack, msgpack_ok, serialize_msgpack},
@@ -55,6 +57,7 @@ pub async fn call(
         }
         (&Method::POST, "/api/serialize") => service.handle_api_serialize(request).await,
         (&Method::POST, "/api/ref-patch") => service.handle_api_ref_patch(request).await,
+        (&Method::POST, "/api/fingerprints") => service.handle_api_fingerprints(request).await,
 
         (&Method::POST, path) if path.starts_with("/api/open/") => {
             service.handle_api_open(request).await
@@ -352,6 +355,53 @@ impl ApiService {
                 removed: Vec::new(),
                 updated: instance_updates.into_values().collect(),
             },
+        })
+    }
+
+    /// Returns a content fingerprint for each requested instance that exists.
+    /// The plugin uses these to tell whether a teammate syncing into the same
+    /// Team Create place synced the same content as this server has.
+    async fn handle_api_fingerprints(&self, request: Request<Body>) -> Response<Body> {
+        let session_id = self.serve_session.session_id();
+        let body = body::to_bytes(request.into_body()).await.unwrap();
+
+        let request: FingerprintsRequest = match deserialize_msgpack(&body) {
+            Ok(request) => request,
+            Err(err) => {
+                return msgpack(
+                    ErrorResponse::bad_request(format!("Invalid body: {}", err)),
+                    StatusCode::BAD_REQUEST,
+                );
+            }
+        };
+
+        if request.session_id != session_id {
+            return msgpack(
+                ErrorResponse::bad_request("Wrong session ID"),
+                StatusCode::BAD_REQUEST,
+            );
+        }
+
+        let tree = self.serve_session.tree();
+        let fingerprints = request
+            .ids
+            .into_iter()
+            .filter_map(|id| {
+                let instance = tree.get_instance(id)?;
+                Some((
+                    id,
+                    fingerprint(
+                        instance.name(),
+                        &instance.class_name(),
+                        instance.properties(),
+                    ),
+                ))
+            })
+            .collect();
+
+        msgpack_ok(FingerprintsResponse {
+            session_id,
+            fingerprints,
         })
     }
 

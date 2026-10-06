@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::HashMap, fs};
 
 use insta::{assert_snapshot, assert_yaml_snapshot, with_settings};
 use rbx_dom_weak::types::Ref;
@@ -7,7 +7,7 @@ use tempfile::tempdir;
 
 use crate::rojo_test::{
     internable::InternAndRedact,
-    serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model},
+    serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model, TestServeSession},
 };
 
 use librojo::web_api::{SerializeResponse, SocketPacketType};
@@ -774,4 +774,82 @@ fn forced_parent() {
         let model = serialize_to_xml_model(&serialize_response, &redactions);
         assert_snapshot!("forced_parent_serialize_model", model);
     });
+}
+
+/// Finds the IDs of every instance in a session's tree, keyed by name.
+fn ids_by_name(session: &TestServeSession, root_id: Ref) -> HashMap<String, Ref> {
+    let read_response = session.get_api_read(root_id).unwrap();
+
+    read_response
+        .instances
+        .values()
+        .map(|instance| (instance.name.to_string(), instance.id))
+        .collect()
+}
+
+#[test]
+fn fingerprints() {
+    // Two servers stand in for two teammates serving the same files into one
+    // Team Create place. Their instance IDs differ, but fingerprints must not.
+    let mut first = TestServeSession::new("scripts");
+    let mut second = TestServeSession::new("scripts");
+    let first_info = first.wait_to_come_online();
+    let second_info = second.wait_to_come_online();
+
+    let first_ids = ids_by_name(&first, first_info.root_instance_id);
+    let second_ids = ids_by_name(&second, second_info.root_instance_id);
+
+    let first_prints = first
+        .post_api_fingerprints(
+            &[first_ids["foo"], first_ids["bar"], Ref::new()],
+            first_info.session_id,
+        )
+        .unwrap();
+    assert_eq!(first_prints.session_id, first_info.session_id);
+    assert_eq!(
+        first_prints.fingerprints.len(),
+        2,
+        "IDs that aren't in the tree should be left out"
+    );
+
+    let second_prints = second
+        .post_api_fingerprints(
+            &[second_ids["foo"], second_ids["bar"]],
+            second_info.session_id,
+        )
+        .unwrap();
+
+    let first_foo = &first_prints.fingerprints[&first_ids["foo"]];
+    let first_bar = &first_prints.fingerprints[&first_ids["bar"]];
+    assert_eq!(first_foo, &second_prints.fingerprints[&second_ids["foo"]]);
+    assert_eq!(first_bar, &second_prints.fingerprints[&second_ids["bar"]]);
+    assert_ne!(first_foo, first_bar);
+
+    // Editing a file changes its fingerprint on that server only.
+    fs::write(first.path().join("src/foo.lua"), "Updated foo!").unwrap();
+    first
+        .get_api_socket_packet(SocketPacketType::Messages, 0)
+        .unwrap();
+
+    let updated_prints = first
+        .post_api_fingerprints(&[first_ids["foo"]], first_info.session_id)
+        .unwrap();
+    let updated_foo = &updated_prints.fingerprints[&first_ids["foo"]];
+    assert_ne!(updated_foo, first_foo);
+
+    // Writing the same content on the other server converges on the same
+    // fingerprint, which is how the plugin recognizes a teammate's change once
+    // it has been pulled through git.
+    fs::write(second.path().join("src/foo.lua"), "Updated foo!").unwrap();
+    second
+        .get_api_socket_packet(SocketPacketType::Messages, 0)
+        .unwrap();
+
+    let converged_prints = second
+        .post_api_fingerprints(&[second_ids["foo"]], second_info.session_id)
+        .unwrap();
+    assert_eq!(
+        &converged_prints.fingerprints[&second_ids["foo"]],
+        updated_foo
+    );
 }
