@@ -20,13 +20,21 @@ Everyone who syncs needs **both** parts from this repository: the `rojo` server 
 
 #### With Rokit (recommended)
 
-This works once a release has been published on this repository's [Releases](https://github.com/Developer-One-Studios/rojo/releases) page.
+Rokit downloads the server from this repository's [Releases](https://github.com/Developer-One-Studios/rojo/releases) page. Releases currently have a Windows build only. On Mac or Linux, [build it yourself](#by-building-it-yourself) for now.
 
 1. Because the repository is private, Rokit needs a GitHub token to download it. Create a [personal access token](https://github.com/settings/tokens) that can read this repository: a classic token with the `repo` scope, or a fine-grained token with read access to **Contents** for `Developer-One-Studios/rojo`. Then run:
 
     ```bash
     rokit authenticate github --token YOUR_TOKEN
     ```
+
+    If you're signed in to the [GitHub CLI](https://cli.github.com), you can use its token instead of creating one:
+
+    ```bash
+    rokit authenticate github --token "$(gh auth token)"
+    ```
+
+    If you gave Rokit a token before, it may not be able to read private repositories. In that case Rokit says `no release was found`, and you need to replace the token as shown above.
 
 2. In your game project's `rokit.toml`, point `rojo` at this repository instead of `rojo-rbx/rojo`:
 
@@ -40,6 +48,8 @@ This works once a release has been published on this repository's [Releases](htt
     ```bash
     rokit install
     ```
+
+    The first time, Rokit asks you to trust the tool. If it fails with `has not been marked as trusted` instead, run `rokit trust Developer-One-Studios/rojo` and try again.
 
     If your project doesn't have a `rokit.toml` yet, `rokit add Developer-One-Studios/rojo@7.7.1-tc.1 rojo` creates the entry for you.
 
