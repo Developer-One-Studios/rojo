@@ -24,7 +24,7 @@ local Roact = require(Packages.Roact)
 local strict = require(script.Parent.Parent.strict)
 
 -- Matches the yellow of the Rojo Team Create logo.
-local BRAND_COLOR = Color3.fromHex("FEED04")
+local BRAND_COLOR = Color3.fromHex("FDF200")
 
 -- The brand yellow is too light for white text or icons on top of it, so
 -- anything drawn over it is nearly black instead.
